@@ -1,0 +1,19 @@
+diff --git a/addon/modules/BrowserDOMWindow.sys.mjs b/addon/modules/BrowserDOMWindow.sys.mjs
+index 5e3e94b..a0d3450 100644
+--- a/addon/modules/BrowserDOMWindow.sys.mjs
++++ b/addon/modules/BrowserDOMWindow.sys.mjs
+@@ -11,9 +11,12 @@ ChromeUtils.defineESModuleGetters(lazy, {
+ });
+ 
+ if (isVersion({fp: "157.0"})) {
+-  /* for Floorp 12.20.1 (157.0.1) */
++  /* for Floorp 12.20.1 (157.0.1), moved to moz-src since Floorp 12.21.0 (159.0) */
+   ChromeUtils.defineESModuleGetters(lazy, {
+-    getWorkspaceUserContextIdForExternalOpen: "resource:///modules/BrowserContentHandler.sys.mjs",
++    getWorkspaceUserContextIdForExternalOpen:
++      isVersion(1590) ?
++        "moz-src:///browser/components/BrowserContentHandler.sys.mjs"
++      : "resource:///modules/BrowserContentHandler.sys.mjs",
+   });
+ }
+ 

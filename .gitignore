@@ -1,0 +1,13 @@
+# ビルドの結果(Releases で配る)
+/Floorp-Launcher/dist/
+/patches/tabmixplus/dist/
+
+# エディター・OS が作るもの
+.vs/
+.vscode/
+*.suo
+*.user
+Thumbs.db
+desktop.ini
+__pycache__/
+*.pyc
