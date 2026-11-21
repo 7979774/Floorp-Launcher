@@ -74,6 +74,7 @@ URL の上の階層へ移動する。
 - Tab Groups 2.2.0 以降が必要。`about:config` で `floorp.workspaces.enabled` を `false`
 - タブを右クリック →「このグループを新しいウィンドウで開く」
 - そのウィンドウを閉じると、グループが元のウィンドウの元の位置に戻る
+- ウィンドウの位置と大きさはグループごとに覚える
 
 ## TabGroupsHelptextFix.uc.js
 

@@ -74,6 +74,7 @@ Open a [Tab Groups](https://github.com/117649/Tab-Groups) group in its own windo
 - Needs Tab Groups 2.2.0 or later. Set `floorp.workspaces.enabled` to `false` in `about:config`
 - Right-click a tab → "Open This Group in New Window"
 - Closing that window puts the group back where it was in the original window
+- The window position and size are remembered per group
 
 ## TabGroupsHelptextFix.uc.js
 

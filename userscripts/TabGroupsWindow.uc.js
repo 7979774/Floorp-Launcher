@@ -2,7 +2,7 @@
 // @name            TabGroupsWindow
 // @description     Tab Groups のグループを一時的に別ウィンドウで開き、そのウィンドウを閉じるときにグループを元のウィンドウへ戻す
 // @include         main
-// @version         1.2.1
+// @version         1.3.2
 // ==/UserScript==
 
 // 必要なもの: Tab Groups (tabgroups@quicksaver) 2.2.0 以降(ItemMove.moveGroup を使う)
@@ -34,6 +34,11 @@
   // (ウィンドウの参照は再起動で消える。グループの id はウィンドウごとに 1, 2, 3… と振られるので、
   // 別のウィンドウの同じ id のグループを目印にすると、関係ない位置に入ってしまう)
   const WINDOW_ID_KEY = 'floorp-tgw-window-id';
+  // グループ用ウィンドウの位置・大きさ。{ byKey: { 目印: {x,y,w,h,max} }, byName: { 名前: … } }。
+  // 目印(GROUP_KEY)で探し、無ければ名前で探す
+  const BOUNDS_PREF = 'userChromeJS.tabGroupsWindow.bounds';
+  // グループの目印。グループのタブに SessionStore のタブの値として付ける
+  const GROUP_KEY = 'floorp-tgw-group-key';
   const TAB_MENU_ID = 'floorp-tgw-context-tab';
   const GROUP_MENU_ID = 'floorp-tgw-context-group';
   const TIMEOUT_MS = 15000;
@@ -157,6 +162,180 @@
     }
   }
 
+  // ---- グループの目印(タブに付ける) ----
+  // グループの id はウィンドウを移ると変わるので、グループのタブに変わらない目印を付けて見分ける。
+  // 目印は SessionStore のタブの値なので、タブと一緒にウィンドウを移り、再起動しても残る
+
+  function tabKey(tab) {
+    try {
+      return win.SessionStore.getCustomTabValue(tab, GROUP_KEY) || '';
+    } catch (ex) {
+      return '';
+    }
+  }
+
+  function setTabKey(tab, key) {
+    try {
+      win.SessionStore.setCustomTabValue(tab, GROUP_KEY, key);
+    } catch (ex) {
+      console.error(LOG, 'タブに目印を付けられませんでした', ex);
+    }
+  }
+
+  function groupTabs(group) {
+    return group.children.map(item => item.tab).filter(tab => tab && tab.isConnected && !tab.closing);
+  }
+
+  // グループのタブでいちばん多い目印(タブを別のグループから移すと違う目印が混ざるので多数決にする)
+  function groupKeyOf(group, except = null) {
+    const count = new Map();
+    for (const tab of groupTabs(group)) {
+      const key = tab === except ? '' : tabKey(tab);
+      if (key) {
+        count.set(key, (count.get(key) || 0) + 1);
+      }
+    }
+    let best = '';
+    let max = 0;
+    for (const [key, n] of count) {
+      if (n > max) {
+        best = key;
+        max = n;
+      }
+    }
+    return best;
+  }
+
+  // グループの目印を決めて(無ければ作って)、グループのタブ全部に付ける
+  function ensureGroupKey(group) {
+    const key = groupKeyOf(group) || win.crypto.randomUUID();
+    for (const tab of groupTabs(group)) {
+      if (tabKey(tab) !== key) {
+        setTabKey(tab, key);
+      }
+    }
+    return key;
+  }
+
+  // タブが入っているグループの目印を、そのタブにも付ける(新しいタブ・別のグループから移ってきたタブ)
+  function syncTabKey(tab) {
+    try {
+      const item = tab && !tab.pinned && Cu.waiveXrays(tab)._tabViewTabItem;
+      const group = item && item.parent;
+      if (!group) {
+        return false;
+      }
+      const key = groupKeyOf(group, tab);
+      if (key && tabKey(tab) !== key) {
+        setTabKey(tab, key);
+      }
+      return true;
+    } catch (ex) {
+      console.error(LOG, 'タブの目印を合わせられませんでした', ex);
+      return true;
+    }
+  }
+
+  // 新しいタブはグループに入るまで少しかかるので、入るまで待ってから合わせる
+  function onTabOpen(event) {
+    const tab = event.target;
+    let tries = 0;
+    const tick = () => {
+      if (!tab.isConnected || tab.closing || syncTabKey(tab) || ++tries > 20) {
+        return;
+      }
+      win.setTimeout(tick, 250);
+    };
+    win.setTimeout(tick, 250);
+  }
+
+  // タブバー(gBrowser の準備より先に DOM にある)。TabOpen / TabSelect はここまで上がってくる
+  function tabStrip() {
+    return win.document.getElementById('tabbrowser-tabs');
+  }
+
+  function onTabSelect(event) {
+    syncTabKey(event.target);
+  }
+
+  // ---- ウィンドウの位置・大きさ ----
+
+  function readAllBounds() {
+    try {
+      const raw = Services.prefs.getStringPref(BOUNDS_PREF, '');
+      const all = raw ? JSON.parse(raw) : {};
+      return {
+        byKey: (all && all.byKey) || {},
+        byName: (all && all.byName) || {},
+      };
+    } catch (ex) {
+      console.error(LOG, 'ウィンドウの位置の記録を読めませんでした', ex);
+      return { byKey: {}, byName: {} };
+    }
+  }
+
+  // 閉じる前のこのウィンドウの位置・大きさを、開いたグループの目印(と名前)で覚える
+  function saveBounds() {
+    try {
+      const frame = readyFrameOf(win);
+      const position = savedPosition();
+      if (!frame || !position || position.groupId == null) {
+        return;
+      }
+      const group = liveGroups(frame).find(g => g.id === position.groupId);
+      if (!group) {
+        return;
+      }
+      const key = ensureGroupKey(group);
+      const title = group.getTitle().trim();
+      const all = readAllBounds();
+      const prev = all.byKey[key] || (title && all.byName[title]) || null;
+      const max = win.windowState === win.STATE_MAXIMIZED;
+      // 最大化中の座標は元に戻したときの大きさではないので、前に覚えた大きさを残して「最大化」だけ記録する
+      const bounds = max && prev
+        ? { ...prev, max: true }
+        : { x: win.screenX, y: win.screenY, w: win.outerWidth, h: win.outerHeight, max };
+      all.byKey[key] = bounds;
+      // 名前は目印が無いとき(タブを全部入れ替えたときなど)の予備
+      if (title) {
+        all.byName[title] = bounds;
+      }
+      Services.prefs.setStringPref(BOUNDS_PREF, JSON.stringify(all));
+    } catch (ex) {
+      console.error(LOG, 'ウィンドウの位置を覚えられませんでした', ex);
+    }
+  }
+
+  // 覚えた位置・大きさがあれば新しいウィンドウに当てる。画面の外になるときは使わない
+  function applyBounds(newWin, key, title) {
+    try {
+      const all = readAllBounds();
+      const b = (key && all.byKey[key]) || (title && all.byName[title.trim()]) || null;
+      if (!b || ![b.x, b.y, b.w, b.h].every(Number.isFinite)) {
+        return;
+      }
+      const screen = Cc['@mozilla.org/gfx/screenmanager;1']
+        .getService(Ci.nsIScreenManager)
+        .screenForRect(b.x, b.y, b.w, b.h);
+      const ax = {}, ay = {}, aw = {}, ah = {};
+      screen.GetAvailRectDisplayPix(ax, ay, aw, ah);
+      // ウィンドウの上の部分(タイトルバーのあたり)が画面に入っているときだけ使う
+      const visible = b.x + b.w > ax.value + 50 && b.x < ax.value + aw.value - 50 &&
+        b.y >= ay.value - 10 && b.y < ay.value + ah.value - 50;
+      if (!visible) {
+        console.log(LOG, `グループ「${title}」の覚えた位置が画面の外なので使いません`);
+        return;
+      }
+      newWin.resizeTo(b.w, b.h);
+      newWin.moveTo(b.x, b.y);
+      if (b.max) {
+        newWin.maximize();
+      }
+    } catch (ex) {
+      console.error(LOG, 'ウィンドウの位置を戻せませんでした', ex);
+    }
+  }
+
   function waitForDelayedStartup(w) {
     if (w.gBrowserInit && w.gBrowserInit.delayedStartupFinished) {
       return Promise.resolve();
@@ -170,6 +349,19 @@
       };
       Services.obs.addObserver(observer, 'browser-delayed-startup-finished');
     });
+  }
+
+  // Tab Groups が予約した「一覧にフォーカスを戻す」タイマーを取り消す(無ければ何もしない)
+  function cancelOverviewRefocus(frame) {
+    try {
+      if (frame && frame.Timers && typeof frame.Timers.cancel === 'function') {
+        frame.Timers.cancel('focusTabView');
+      } else {
+        console.warn(LOG, 'Tab Groups のタイマーが見つからないので、一覧へのフォーカスの戻しを取り消せません');
+      }
+    } catch (ex) {
+      console.error(LOG, '一覧へのフォーカスの戻しを取り消せませんでした', ex);
+    }
   }
 
   async function openGroupInNewWindow(group) {
@@ -191,8 +383,11 @@
         return false;
       }
 
+      // 移す前にグループのタブ全部へ目印を付ける(タブと一緒に新しいウィンドウへ移る)
+      const groupKey = ensureGroupKey(group);
       newWin = win.OpenBrowserWindow({ private: isPrivate(win) });
       await waitForDelayedStartup(newWin);
+      applyBounds(newWin, groupKey, group.getTitle());
       const targetFrame = await frameOf(newWin);
       const moveGroup = moveGroupFn(targetFrame);
       // 新しいウィンドウの最初のタブ(ホーム)が Tab Groups のグループに入るまで待つ
@@ -246,6 +441,15 @@
         console.error(LOG, '元の位置を保存できませんでした(閉じたときはいちばん後ろに戻ります)', ex);
       }
       newWin.__floorpTgwOrigin = Cu.getWeakReference(win);
+      // 元のウィンドウで一覧(TabView)を開いていると、タブが抜けたときに Tab Groups が
+      // 「一覧にフォーカスを戻す」処理(UI.focusTabView、0ms 後のタイマー)を予約する。
+      // そのまま動くと、新しいウィンドウを前面に出した直後に元のウィンドウがアクティブに戻るので取り消す
+      cancelOverviewRefocus(sourceFrame);
+      // 準備の途中で元のウィンドウが前に戻ることがあるので、最後に新しいウィンドウを前面に出す
+      if (newWin.windowState === newWin.STATE_MINIMIZED) {
+        newWin.restore();
+      }
+      newWin.focus();
       console.log(LOG, `グループ「${newGroup.getTitle()}」を新しいウィンドウで開きました`);
       return true;
     } catch (ex) {
@@ -377,6 +581,8 @@
       return false;
     }
     returning = true;
+    // グループを戻す前(ウィンドウがまだそのままの位置にあるうち)に位置・大きさを覚える
+    saveBounds();
     (async () => {
       try {
         const failed = await returnGroups(target);
@@ -555,8 +761,13 @@
     // TabView のフレーム(親プロセスの iframe)のイベントはウィンドウのルートまで届く。
     // フレームは後から作られるので、フレーム自体ではなくルートで待つ
     win.windowRoot.addEventListener('contextmenu', onFrameContextMenu, true);
+    // グループに入ってきたタブにも、そのグループの目印を付ける
+    tabStrip()?.addEventListener('TabOpen', onTabOpen);
+    tabStrip()?.addEventListener('TabSelect', onTabSelect);
     win.addEventListener('unload', () => {
       try {
+        tabStrip()?.removeEventListener('TabOpen', onTabOpen);
+        tabStrip()?.removeEventListener('TabSelect', onTabSelect);
         win.windowRoot.removeEventListener('contextmenu', onFrameContextMenu, true);
       } catch (ex) {
         console.error(LOG, '右クリックの監視を解除できませんでした', ex);
