@@ -2,7 +2,7 @@
 // @name            ContextMenuEditor
 // @description     ページとタブの右クリックメニューを、メニューの上で直接編集する(項目を隠す・並べ替える・グループ(サブメニュー)にまとめる・区切りを置く)
 // @include         main
-// @version         1.0.4
+// @version         1.0.5
 // ==/UserScript==
 
 // userChrome.js ローダーがブラウザウィンドウごとにウィンドウのスコープで読み込む。
@@ -42,6 +42,8 @@
   const ATTR_EMPTY = 'cme-empty'; // 出る項目が無いグループ
   const GROUP_PREFIX = 'cme-group-';
   const SEP_PREFIX = 'cme-sep-';
+  // 拡張機能のサブメニューに付ける id の後ろ(前は拡張機能ごとの「…-menuitem-」)
+  const EXT_ROOT_SUFFIX = 'cme-root';
 
   // 編集できるメニュー
   const MENUS = {
@@ -244,11 +246,40 @@
       const cfg = JSON.parse(raw);
       if (!cfg || !Array.isArray(cfg.order)) throw new Error('order が無い');
       if (!Array.isArray(cfg.hidden)) cfg.hidden = [];
+      if (dedupeConfig(cfg)) {
+        console.warn(LOG, `${menuId} の並びの設定に重複があったので取り除いて保存し直しました`);
+        saveConfig(menuId, cfg);
+      }
       return cfg;
     } catch (ex) {
       console.error(LOG, `${menuId} の設定を読めませんでした。元の並びで出します`, ex);
       return null;
     }
+  }
+
+  // 同じ id が並びに 2 回以上あれば最初の 1 つだけ残す(1.0.4 までの不具合で重複が保存されていることがある)。
+  // 取り除いたものがあれば true
+  function dedupeConfig(cfg) {
+    const seen = new Set();
+    const first = (id) => {
+      if (typeof id !== 'string' || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    };
+    const keep = (e) => {
+      if (typeof e === 'string') return first(e);
+      if (e && e.sep) return first(e.sep);
+      if (e && e.group) {
+        if (!first(e.group)) return false;
+        e.items = (Array.isArray(e.items) ? e.items : []).filter((c) => typeof c === 'string' ? first(c) : !!(c && c.sep && first(c.sep)));
+        return true;
+      }
+      return false;
+    };
+    const before = JSON.stringify(cfg);
+    cfg.order = cfg.order.filter(keep);
+    cfg.hidden = [...new Set(cfg.hidden)];
+    return JSON.stringify(cfg) !== before;
   }
 
   function saveConfig(menuId, cfg) {
@@ -338,8 +369,10 @@
     // 1. 並びのとおりに置く(id の無いものは飛ばす)
     for (const e of cfg.order) {
       if (typeof e === 'string') {
+        // 動かすのはメニューの直下と自前のグループの中の要素だけ。拡張機能がまとめたサブメニューの中の項目を
+        // 外へ出すと、メニューを閉じたときに本体がサブメニューだけを片付けて項目が残り、開くたびに増えていく
         const n = doc.getElementById(e);
-        if (n && popup.contains(n) && !isOurs(n)) put(popup, n);
+        if (n && isTopLevelCandidate(popup, n) && !isOurs(n)) put(popup, n);
       } else if (e && e.sep) {
         put(popup, sepElement(e.sep));
         used.add(e.sep);
@@ -351,7 +384,7 @@
         for (const c of e.items || []) {
           if (typeof c === 'string') {
             const n = doc.getElementById(c);
-            if (n && popup.contains(n)) put(gp, n);
+            if (n && isTopLevelCandidate(popup, n) && !isOurs(n)) put(gp, n);
           } else if (c && c.sep) {
             put(gp, sepElement(c.sep));
             used.add(c.sep);
@@ -449,7 +482,16 @@
   // 名前が同じなら次に起動したときも同じ id になるので、並びと「隠す」を保存できる
   function ensureIds(popup) {
     for (const n of popup.querySelectorAll('menuitem, menu, menuseparator, menugroup')) {
-      if (n.id || !isTopLevelCandidate(popup, n)) continue;
+      if (!isTopLevelCandidate(popup, n)) continue;
+      // 拡張機能が 2 つ以上の項目をまとめたサブメニューは、id が起動のたびに変わる連番(…-menuitem-3 など)。
+      // 拡張機能ごとに変わらない id に付け替えて、並びと「隠す」を覚えられるようにする。
+      // 頭の「…-menuitem-」は残す(本体は作り直すとき、この頭で自分の要素を探して消す)
+      if (n.id && n.localName === 'menu' && n.getAttribute('ext-type') === 'top-level-menu') {
+        const m = /^(.+-menuitem-)\d+$/.exec(n.id);
+        if (m && !doc.getElementById(m[1] + EXT_ROOT_SUFFIX)) n.id = m[1] + EXT_ROOT_SUFFIX;
+        continue;
+      }
+      if (n.id) continue;
       const label = n.getAttribute('label') || n.textContent.trim();
       if (!label) continue;
       let h = 0;
@@ -496,6 +538,8 @@
 
   function retidy(popup) {
     try {
+      // 開いている間に拡張機能が項目を作り直すと、サブメニューの id が連番に戻るので付け替え直す
+      ensureIds(popup);
       ensureEditItem(popup);
       tidy(popup);
     } catch (ex) {
