@@ -10,6 +10,7 @@ Floorp のポータブル版で userChrome.js を使うための一式。自分�
 
 - [`Floorp-Launcher/`](Floorp-Launcher/) … Floorp を起動するランチャー。公式の `floorp-portable.exe` の代わり
 - [`userscripts/`](userscripts/) … userChrome.js 用のスクリプト
+- [`userstyles/`](userstyles/) … ブラウザの画面用の CSS
 - [`patches/`](patches/) … 新しい Floorp で動かすための修正
 
 ## 使い方

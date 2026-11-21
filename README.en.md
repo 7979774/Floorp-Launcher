@@ -10,6 +10,7 @@ Unofficial. Not affiliated with Floorp or Mozilla (Floorp is a registered tradem
 
 - [`Floorp-Launcher/`](Floorp-Launcher/) … a launcher for Floorp. Use it instead of the official `floorp-portable.exe`
 - [`userscripts/`](userscripts/) … scripts for userChrome.js
+- [`userstyles/`](userstyles/) … CSS for the browser UI
 - [`patches/`](patches/) … fixes for running on newer Floorp
 
 ## Usage

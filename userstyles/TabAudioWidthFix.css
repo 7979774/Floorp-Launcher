@@ -1,0 +1,5 @@
+@charset "UTF-8";
+/* 音が出ている・ミュート中のタブも幅を変えない(本体が最小幅に 24px 足すのを 0 にする) */
+@-moz-document url(chrome://browser/content/browser.xhtml) {
+  .tabbrowser-tab { --tab-min-width-extra-icons: 0px !important; }
+}
